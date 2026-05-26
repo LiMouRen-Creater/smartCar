@@ -97,6 +97,7 @@ RacingControlNode::RacingControlNode(const std::string &node_name, const rclcpp:
   timer_ = create_wall_timer(std::chrono::milliseconds(30), std::bind(&RacingControlNode::timer_callback, this));
 }
 
+//sign4return发来的msg(int32) 6：结束遥感 5：开启遥感 0/-1：正常模式
 void RacingControlNode::sign_callback(const std_msgs::msg::Int32::SharedPtr msg)
 {
   if (!msg)

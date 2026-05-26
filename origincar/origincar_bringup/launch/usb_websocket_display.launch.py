@@ -6,11 +6,12 @@ from launch.substitutions import TextSubstitution, LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python import get_package_share_directory, get_package_prefix
 
-
 def generate_launch_description():
+    # Copy config files
     dnn_node_example_path = os.path.join(get_package_prefix('dnn_node_example'), "lib/dnn_node_example")
     os.system(f"cp -r {dnn_node_example_path}/config .")
 
+    # Declare launch arguments
     launch_args = [
         DeclareLaunchArgument("dnn_example_config_file", default_value=TextSubstitution(text="config/fcosworkconfig.json")),
         DeclareLaunchArgument("dnn_example_dump_render_img", default_value=TextSubstitution(text="0")),
@@ -20,53 +21,40 @@ def generate_launch_description():
         DeclareLaunchArgument('device', default_value='/dev/video0', description='usb camera device'),
     ]
 
-    usb_node = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(get_package_share_directory('hobot_usb_cam') + '/launch/hobot_usb_cam.launch.py'),
-        launch_arguments={'usb_image_width': '640', 'usb_image_height': '480', 'usb_zero_copy': 'True',
-                          'usb_video_device': LaunchConfiguration('device')}.items())
+    # Include launch descriptions
+    usb_node = IncludeLaunchDescription(PythonLaunchDescriptionSource(get_package_share_directory('hobot_usb_cam') + '/launch/hobot_usb_cam.launch.py'),
+                                       launch_arguments={'usb_image_width': '640', 'usb_image_height': '480','usb_zero_copy': 'True',
+                                                         'usb_video_device': LaunchConfiguration('device')}.items())
 
-    nv12_decode_node = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(get_package_share_directory('hobot_codec') + '/launch/hobot_codec_decode.launch.py'),
-        launch_arguments={'codec_channel': '1',
-                          'codec_in_format': 'jpeg', 'codec_out_format': 'nv12',
-                          'codec_in_mode': 'shared_mem', 'codec_out_mode': 'shared_mem',
-                          'codec_sub_topic': '/hbmem_img', 'codec_pub_topic': '/nv12_img'}.items())
+    nv12_decode_node = IncludeLaunchDescription(PythonLaunchDescriptionSource(get_package_share_directory('hobot_codec') + '/launch/hobot_codec_decode.launch.py'),
+                                               launch_arguments={'codec_channel'  : '1',
+                                                                 'codec_in_format':'jpeg',        'codec_out_format': 'nv12',
+                                                                 'codec_in_mode'  : 'shared_mem', 'codec_out_mode'  : 'shared_mem',
+                                                                 'codec_sub_topic': '/hbmem_img', 'codec_pub_topic' : '/nv12_img'}.items())
 
-    img_encode_node = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(get_package_share_directory('hobot_codec') + '/launch/hobot_codec_encode.launch.py'),
-        launch_arguments={'codec_channel': '2', 'codec_jpg_quality': '10.0',
-                          'codec_in_format': 'nv12', 'codec_out_format': 'jpeg',
-                          'codec_in_mode': 'shared_mem', 'codec_out_mode': 'ros',
-                          'codec_sub_topic': '/nv12_img', 'codec_pub_topic': '/image_jpeg'}.items())
+    # img_encode_node = IncludeLaunchDescription(PythonLaunchDescriptionSource(get_package_share_directory('hobot_codec') + '/launch/hobot_codec_encode.launch.py'),
+    #                                            launch_arguments={'codec_channel'  : '2',             'codec_jpg_quality': '10.0', # 'codec_output_framerate' : '25',
+    #                                                              'codec_in_format': 'nv12',          'codec_out_format' : 'jpeg',
+    #                                                              'codec_in_mode'  : 'shared_mem',    'codec_out_mode'   : 'ros',
+    #                                                              'codec_sub_topic': '/nv12_img', 'codec_pub_topic'  : '/img_decode'}.items())
+    
+    ##在网页端8000端口传图像的节点                                                                
+    # # web_node = IncludeLaunchDescription(PythonLaunchDescriptionSource(get_package_share_directory('websocket') + '/launch/websocket.launch.py'),
+    #                                     launch_arguments={'websocket_image_topic': '/image', 'websocket_image_type': 'mjpeg',
+    #                                                       'websocket_smart_topic': LaunchConfiguration("dnn_example_msg_pub_topic_name")}.items())
 
-    racing_obstacle_detection_yolo = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('racing_obstacle_detection_yolo') + '/launch/racing_obstacle_detection_yolo.launch.py'))
+    racing_obstacle_detection_yolo = IncludeLaunchDescription(PythonLaunchDescriptionSource(
+                                        get_package_share_directory('racing_obstacle_detection_yolo') + '/launch/racing_obstacle_detection_yolo.launch.py'))
 
-    racing_track_detection_resnet = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('racing_track_detection_resnet') + '/launch/racing_track_detection_resnet.launch.py'))
-
-    origincar_base = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('origincar_base') + '/launch/origincar_bringup.launch.py'))
-
-    racing_control = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            get_package_share_directory('racing_control') + '/launch/racing_control.launch.py'))
-
-    # web_node = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource(
-    #         get_package_share_directory('websocket') + '/launch/websocket.launch.py'),
-    #     launch_arguments={'websocket_image_topic': '/image_jpeg', 'websocket_image_type': 'mjpeg',
-    #                       'websocket_smart_topic': '/racing_obstacle_detection'}.items())
-
-    # web_node_track = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource(
-    #         get_package_share_directory('websocket') + '/launch/websocket.launch.py'),
-    #     launch_arguments={'websocket_image_topic': '/image_jpeg', 'websocket_image_type': 'mjpeg',
-    #                       'websocket_smart_topic': '/racing_track_center_detection'}.items())
-
+    racing_track_detection_resnet = IncludeLaunchDescription(PythonLaunchDescriptionSource(
+                                        get_package_share_directory('racing_track_detection_resnet') + '/launch/racing_track_detection_resnet.launch.py'))
+    
+    origincar_base = IncludeLaunchDescription(PythonLaunchDescriptionSource(
+                                        get_package_share_directory('origincar_base') + '/launch/origincar_bringup.launch.py'))
+    
+    racing_control = IncludeLaunchDescription(PythonLaunchDescriptionSource(
+                                        get_package_share_directory('racing_control') + '/launch/racing_control.launch.py'))
+    # Algorithm node
     dnn_node_example_node = Node(
         package='dnn_node_example',
         executable='example',
@@ -101,37 +89,20 @@ def generate_launch_description():
         output='screen',
         arguments=['--ros-args', '--log-level', 'info']
     )
-
-    # rosbridge_node = ExecuteProcess(
-    #     cmd=['ros2', 'launch', 'rosbridge_server', 'rosbridge_websocket_launch.xml'],
-    #     output='screen'
-    # )
-
-    # cam_bridge_node = Node(
-    #     package='origincar_bringup',
-    #     executable='cam_bridge.py',
-    #     name='cam_bridge',
-    #     output='screen',
-    #     parameters=[
-    #         {"sub_topic": "/img_decode"},
-    #         {"pub_topic": "/camera/image_raw"},
-    #         {"pub_fps": 15}
-    #     ],
-    #     arguments=['--ros-args', '--log-level', 'info']
-    # )
-
+    rosbridge_node = ExecuteProcess(
+        cmd=['ros2', 'launch', 'rosbridge_server', 'rosbridge_websocket_launch.xml'],
+        output='screen'
+    )
     return LaunchDescription(launch_args + [
         usb_node,
         nv12_decode_node,
-        img_encode_node,
+        # img_encode_node,
         qrcode,
         img_to_model,
         vision_language_model,
         racing_track_detection_resnet,
         racing_obstacle_detection_yolo,
-        racing_control,
-        # rosbridge_node,
+        rosbridge_node,
         origincar_base,
-        # web_node,
-        # web_node_track,
+        # racing_control
     ])

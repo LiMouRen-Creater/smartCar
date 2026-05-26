@@ -33,8 +33,34 @@ def generate_launch_description():
         "dnn_sample_image_height", default_value=TextSubstitution(text="480")
     )
 
-    web_show = os.getenv('WEB_SHOW')
+    web_show = os.getenv('WEB_SHOW')#export WEB_SHOW=TRUE
     print("web_show is ", web_show)
+
+    # jpeg图片编码&发布pkg
+    jpeg_codec_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('hobot_codec'),
+                'launch/hobot_codec_encode.launch.py')),
+        launch_arguments={
+            'codec_in_mode': 'shared_mem',
+            'codec_out_mode': 'ros',
+            'codec_sub_topic': '/hbmem_img',
+            'codec_pub_topic': '/image_jpeg',
+        }.items()
+    )
+
+    web_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('websocket'),
+                'launch/websocket.launch.py')),
+        launch_arguments={
+            'websocket_image_topic': '/image_jpeg',
+            'websocket_smart_topic': '/racing_obstacle_detection'
+        }.items()
+    )
+
 
     # 障碍物检测pkg
     racing_obstacle_detection_yolov5_node = Node(
@@ -49,7 +75,13 @@ def generate_launch_description():
         arguments=['--ros-args', '--log-level', 'warn']
     )
 
-    # 编码器和websocket由主launch统一管理，避免冲突
-    return LaunchDescription([
-        racing_obstacle_detection_yolov5_node
-    ])
+    if web_show == "TRUE":
+        return LaunchDescription([
+            racing_obstacle_detection_yolov5_node,
+            jpeg_codec_node,
+            web_node
+        ])
+    else:
+        return LaunchDescription([
+            racing_obstacle_detection_yolov5_node
+        ])
