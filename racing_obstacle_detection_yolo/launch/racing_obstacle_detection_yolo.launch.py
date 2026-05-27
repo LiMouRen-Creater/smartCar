@@ -1,17 +1,3 @@
-# Copyright (c) 2022，Horizon Robotics.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import os
 
 from launch import LaunchDescription
@@ -25,7 +11,6 @@ from ament_index_python import get_package_share_directory
 
 
 def generate_launch_description():
-    # args that can be set from the command line or a default will be used
     image_width_launch_arg = DeclareLaunchArgument(
         "dnn_sample_image_width", default_value=TextSubstitution(text="640")
     )
@@ -33,23 +18,28 @@ def generate_launch_description():
         "dnn_sample_image_height", default_value=TextSubstitution(text="480")
     )
 
-    web_show = os.getenv('WEB_SHOW')#export WEB_SHOW=TRUE
+    web_show = os.getenv('WEB_SHOW')
     print("web_show is ", web_show)
 
-    # jpeg图片编码&发布pkg
+
+    # jpeg图片编码&发布pkg（务必加上 codec_channel: '2'）
     jpeg_codec_node = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
                 get_package_share_directory('hobot_codec'),
                 'launch/hobot_codec_encode.launch.py')),
         launch_arguments={
+            'codec_channel': '2',              # 💡 极其重要：必须指定为通道2，否则会和解码器冲突导致崩溃！
             'codec_in_mode': 'shared_mem',
             'codec_out_mode': 'ros',
-            'codec_sub_topic': '/hbmem_img',
-            'codec_pub_topic': '/image_jpeg',
+            'codec_in_format': 'nv12',         
+            'codec_out_format': 'jpeg',        
+            'codec_sub_topic': '/nv12_img',    
+            'codec_pub_topic': '/image_jpeg',  
         }.items()
     )
 
+    # 网页传输节点（补全图像类型参数 mjpeg）
     web_node = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -57,10 +47,10 @@ def generate_launch_description():
                 'launch/websocket.launch.py')),
         launch_arguments={
             'websocket_image_topic': '/image_jpeg',
+            'websocket_image_type': 'mjpeg',   # 💡 补上这个关键参数！
             'websocket_smart_topic': '/racing_obstacle_detection'
         }.items()
     )
-
 
     # 障碍物检测pkg
     racing_obstacle_detection_yolov5_node = Node(
