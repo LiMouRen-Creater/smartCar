@@ -14,14 +14,18 @@ public:
 private:
   void subscription_callback_point(const ai_msgs::msg::PerceptionTargets::SharedPtr msg);
   void subscription_callback_target(const ai_msgs::msg::PerceptionTargets::SharedPtr msg);
+  void subscription_callback_yellow_track(const ai_msgs::msg::PerceptionTargets::SharedPtr msg);
   void line_following(const ai_msgs::msg::Target &point_msg);
+  void yellow_line_following(const ai_msgs::msg::Target &point_msg);
   void timer_callback();
   void sign_callback(const std_msgs::msg::Int32::SharedPtr msg);
 
   ai_msgs::msg::PerceptionTargets::SharedPtr latest_point_msg_;
   ai_msgs::msg::PerceptionTargets::SharedPtr latest_target_msg_;
+  ai_msgs::msg::PerceptionTargets::SharedPtr latest_yellow_track_msg_;
   std::mutex point_msg_mutex_;
   std::mutex target_msg_mutex_;
+  std::mutex yellow_track_mutex_;
 
   bool avoid_dir_qrcode_ = false;
   int y_dir_qrcode_ = 0;
@@ -49,6 +53,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_p_;
   rclcpp::Subscription<ai_msgs::msg::PerceptionTargets>::SharedPtr point_subscriber_;
   rclcpp::Subscription<ai_msgs::msg::PerceptionTargets>::SharedPtr target_subscriber_;
+  rclcpp::Subscription<ai_msgs::msg::PerceptionTargets>::SharedPtr yellow_track_subscriber_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr publisher_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr sign_sub_1_;
   rclcpp::TimerBase::SharedPtr timer_;
@@ -90,6 +95,11 @@ RacingControlNode::RacingControlNode(const std::string &node_name, const rclcpp:
       "/racing_obstacle_detection", qos,
       std::bind(&RacingControlNode::subscription_callback_target, this, std::placeholders::_1));
 
+  // 订阅OpenCV黄色车道线中心检测结果（作为黑线丢失时的备用）
+  yellow_track_subscriber_ = create_subscription<ai_msgs::msg::PerceptionTargets>(
+      "/yellow_track_center", qos,
+      std::bind(&RacingControlNode::subscription_callback_yellow_track, this, std::placeholders::_1));
+
   sign_sub_1_ = this->create_subscription<std_msgs::msg::Int32>(
      "/sign4return",10,std::bind(&RacingControlNode::sign_callback, this, std::placeholders::_1));
   publisher_p_ = this->create_publisher<std_msgs::msg::String>("/p", 10);
@@ -119,10 +129,16 @@ void RacingControlNode::subscription_callback_target(const ai_msgs::msg::Percept
   std::unique_lock<std::mutex> lock(target_msg_mutex_);
   latest_target_msg_ = msg;
 }
+void RacingControlNode::subscription_callback_yellow_track(const ai_msgs::msg::PerceptionTargets::SharedPtr msg)
+{
+  std::unique_lock<std::mutex> lock(yellow_track_mutex_);
+  latest_yellow_track_msg_ = msg;
+}
 void RacingControlNode::timer_callback()
 {
   ai_msgs::msg::PerceptionTargets::SharedPtr point_msg;
   ai_msgs::msg::PerceptionTargets::SharedPtr target_msg;
+  ai_msgs::msg::PerceptionTargets::SharedPtr yellow_track_msg;
   {
     std::unique_lock<std::mutex> lock(point_msg_mutex_);
     if (latest_point_msg_)
@@ -132,6 +148,11 @@ void RacingControlNode::timer_callback()
     std::unique_lock<std::mutex> lock(target_msg_mutex_);
     if (latest_target_msg_)
       target_msg = latest_target_msg_;
+  }
+  {
+    std::unique_lock<std::mutex> lock(yellow_track_mutex_);
+    if (latest_yellow_track_msg_)
+      yellow_track_msg = latest_yellow_track_msg_;
   }
   std::vector<ai_msgs::msg::Target> filtered_obstacles;
   std::vector<ai_msgs::msg::Target> filtered_p;
@@ -174,10 +195,6 @@ void RacingControlNode::timer_callback()
                 bottom, obstacle_left, obstacle_right, center_x_p);
                 
     avoid_dir_p_ = true;
-    // if (bottom >= y_avoid_dir_p_ && bottom <= 480)
-    // {
-    //   avoid_dir_p_ = true;
-    // }
 
     if (bottom >= y_stop_p_ && bottom <= 480)
     {
@@ -282,34 +299,53 @@ void RacingControlNode::timer_callback()
 
 
 
-  // 黑线
-  if (!point_msg || point_msg->targets.empty())
+  // 黑线巡线（优先使用ResNet黑线中心；若无则fallback到黄色车道线中心）
+  // 原始逻辑：当黑线丢失时用记忆方向搜索；现在改为优先使用黄色车道线
+  bool black_line_lost = (!point_msg || point_msg->targets.empty());
+  bool yellow_line_available = (yellow_track_msg && !yellow_track_msg->targets.empty() &&
+                                yellow_track_msg->targets[0].points.size() > 0 &&
+                                yellow_track_msg->targets[0].points[0].point.size() > 0 &&
+                                yellow_track_msg->targets[0].points[0].point[0].x >= 0);
+
+  if (black_line_lost)
   {
-    last_point_error_out_ = 0;
-    is_avoid_ = 0;
-    avoid_number += 1;
-    if (avoid_number == 1)
+    if (yellow_line_available)
     {
-      if (current_dir_ == 0) // 前面左转，现在右转
-      {
-        angular_z_ = -0.5;
-      }
-      else if (current_dir_ == 1) // 前面右转，现在左转
-      {
-        angular_z_ = 0.5;
-      }
+      // 黑线丢失但有黄色车道线 → 使用黄色车道线巡线
+      RCLCPP_WARN(this->get_logger(), "黑线丢失，切换到黄色车道线巡线");
+      const auto &yellow_target = yellow_track_msg->targets[0];
+      yellow_line_following(yellow_target);
     }
     else
     {
-      angular_z_ *= 4;
+      // 两者都丢失 → 原始记忆搜索逻辑
+      last_point_error_out_ = 0;
+      is_avoid_ = 0;
+      avoid_number += 1;
+      if (avoid_number == 1)
+      {
+        if (current_dir_ == 0) // 前面左转，现在右转
+        {
+          angular_z_ = -0.5;
+        }
+        else if (current_dir_ == 1) // 前面右转，现在左转
+        {
+          angular_z_ = 0.5;
+        }
+      }
+      else
+      {
+        angular_z_ *= 4;
+      }
+      auto twist_msg = geometry_msgs::msg::Twist();
+      twist_msg.linear.x = avoid_x_;
+      twist_msg.angular.z = angular_z_;
+      publisher_->publish(twist_msg);
     }
-    auto twist_msg = geometry_msgs::msg::Twist();
-    twist_msg.linear.x = avoid_x_;
-    twist_msg.angular.z = angular_z_;
-    publisher_->publish(twist_msg);
   }
   else
   {
+    // 黑线正常 → 用原始黑线巡线
     avoid_number = 0;
     const auto &point_target = point_msg->targets[0];
     line_following(point_target);
@@ -350,6 +386,50 @@ void RacingControlNode::line_following(const ai_msgs::msg::Target &point_msg)
   twist_msg.angular.z = line_z;
   publisher_->publish(twist_msg);
   last_point_error_out_ = point_error_out;
+}
+
+void RacingControlNode::yellow_line_following(const ai_msgs::msg::Target &point_msg)
+{
+  // 黄色车道线巡线逻辑：与黑线巡线类似但目标中心为320（图像中心）
+  // 因为黄色车道线检测的是赛道黄色区域的中心点，目标是回到赛道中间
+  double x = point_msg.points[0].point[0].x;
+  double yellow_error_now = 0.0;
+  double yellow_error_out = 0.0;
+  double line_z = 0.0;
+
+  // 黄色车道线目标：将车道线中心控制在图像中央（320）
+  // 使用更大的死区（5像素）因为OpenCV检测精度低于ResNet
+  yellow_error_now = 320.0 - x;
+
+  if (std::abs(yellow_error_now) < 5.0)
+  {
+    yellow_error_now = 0.0;
+    last_point_error_out_ = 0.0;
+  }
+
+  // 使用较低的PID增益（黄色车道线检测噪声更大）
+  double yellow_line_kp = line_kp_ * 0.8; // 黄色线增益降低20%
+  yellow_error_out = 0.6 * yellow_error_now + 0.4 * last_point_error_out_;
+  line_z = yellow_line_kp * yellow_error_out;
+
+  if (is_avoid_ > 0)
+  {
+    line_z *= 0.5;
+    is_avoid_ -= 1;
+  }
+
+  // 黄色车道线巡线速度适当降低
+  double yellow_line_x = line_x_ * 0.7;
+
+  auto twist_msg = geometry_msgs::msg::Twist();
+  twist_msg.linear.x = yellow_line_x;
+  twist_msg.angular.z = line_z;
+  publisher_->publish(twist_msg);
+  last_point_error_out_ = yellow_error_out;
+
+  RCLCPP_INFO(this->get_logger(),
+              "[黄色车道线] x=%.1f error=%.1f output=%.1f z=%.3f",
+              x, yellow_error_now, yellow_error_out, line_z);
 }
 int main(int argc, char *argv[])
 {
