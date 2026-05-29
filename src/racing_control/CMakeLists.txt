@@ -26,6 +26,7 @@ find_package(origincar_msg REQUIRED)
 
 add_executable(racing_control src/racing_control.cpp)
 add_executable(control_master src/control_master.cpp)
+add_executable(post_qr_control src/post_qr_control.cpp)
 
 
 ament_target_dependencies(
@@ -43,6 +44,13 @@ ament_target_dependencies(
   "geometry_msgs"
   "origincar_msg"
 )
+ament_target_dependencies(
+  post_qr_control
+  "rclcpp"
+  "std_msgs"
+  "geometry_msgs"
+  "ai_msgs"
+)
 
 
 target_include_directories(racing_control PUBLIC
@@ -51,11 +59,16 @@ target_include_directories(racing_control PUBLIC
 target_include_directories(control_master PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
+target_include_directories(post_qr_control PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
 
 
 install(TARGETS racing_control
   DESTINATION lib/${PROJECT_NAME})
 install(TARGETS control_master
+  DESTINATION lib/${PROJECT_NAME})
+install(TARGETS post_qr_control
   DESTINATION lib/${PROJECT_NAME})
 
 

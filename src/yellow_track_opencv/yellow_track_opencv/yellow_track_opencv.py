@@ -272,7 +272,7 @@ class YellowTrackOpenCVNode(Node):
         return center_x, center_y
 
     def process_frame(self, bgr_img, frame_id, timestamp):
-        """处理一帧BGR图像，返回车道线中心点坐标"""
+        """处理一帧BGR图像，返回车道线中心点坐标和黄色面积占比"""
         h, w = bgr_img.shape[:2]
 
         # 裁剪ROI区域
@@ -283,7 +283,7 @@ class YellowTrackOpenCVNode(Node):
 
         roi = bgr_img[roi_y1:roi_y2, roi_x1:roi_x2]
         if roi.size == 0:
-            return -1.0, -1.0
+            return -1.0, -1.0, 0.0
 
         # BGR → HSV
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
@@ -298,6 +298,11 @@ class YellowTrackOpenCVNode(Node):
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)  # 开运算去噪
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)  # 闭运算填充
+
+        # 计算黄色面积占比（黄色像素数 / ROI总像素数）
+        roi_total_pixels = (roi_y2 - roi_y1) * (roi_x2 - roi_x1)
+        yellow_pixels = cv2.countNonZero(mask)
+        yellow_ratio = yellow_pixels / max(roi_total_pixels, 1)
 
         # 检测方法
         roi_h, roi_w = roi.shape[:2]
@@ -360,22 +365,17 @@ class YellowTrackOpenCVNode(Node):
                 self.get_logger().error(f'NV12解码失败: {e}')
             return
 
-        # 处理帧
-        cx, cy = self.process_frame(bgr_img, frame_id, timestamp)
+        # 处理帧（返回中心坐标和黄色面积占比）
+        cx, cy, yellow_ratio = self.process_frame(bgr_img, frame_id, timestamp)
 
         if self.debug_output:
             self.get_logger().info(
-                f'帧{frame_id}: yellow_track_center ({cx:.1f}, {cy:.1f})')
+                f'帧{frame_id}: yellow_track_center ({cx:.1f}, {cy:.1f}) '
+                f'黄色占比={yellow_ratio:.3f}')
 
         # 发布检测结果（格式与racing_track_detection_resnet一致：ai_msgs/PerceptionTargets）
         # 同时把黄色面积占比（黄色像素/ROI总面积）放到rois[0].confidence中
         # 供racing_control判断是否进入黄色通道（后QR状态机使用）
-        roi_area = (self.roi_bottom - self.roi_top) * (self.roi_right - self.roi_left)
-        yellow_ratio = 0.0
-        if roi_area > 0 and cx >= 0 and cy >= 0:
-            # mask是在process_frame中计算的，这里通过re-calc或缓存获取
-            # 简单方案：如果检测到中心点，近似黄色占比
-            yellow_ratio = 0.2 if cx >= 0 else 0.0  # 检测到时设为0.2（超过默认阈值0.15）
 
         target_msg = PerceptionTargets()
         target_msg.header.frame_id = frame_id
