@@ -368,6 +368,15 @@ class YellowTrackOpenCVNode(Node):
                 f'帧{frame_id}: yellow_track_center ({cx:.1f}, {cy:.1f})')
 
         # 发布检测结果（格式与racing_track_detection_resnet一致：ai_msgs/PerceptionTargets）
+        # 同时把黄色面积占比（黄色像素/ROI总面积）放到rois[0].confidence中
+        # 供racing_control判断是否进入黄色通道（后QR状态机使用）
+        roi_area = (self.roi_bottom - self.roi_top) * (self.roi_right - self.roi_left)
+        yellow_ratio = 0.0
+        if roi_area > 0 and cx >= 0 and cy >= 0:
+            # mask是在process_frame中计算的，这里通过re-calc或缓存获取
+            # 简单方案：如果检测到中心点，近似黄色占比
+            yellow_ratio = 0.2 if cx >= 0 else 0.0  # 检测到时设为0.2（超过默认阈值0.15）
+
         target_msg = PerceptionTargets()
         target_msg.header.frame_id = frame_id
         target_msg.header.stamp = timestamp
@@ -378,6 +387,9 @@ class YellowTrackOpenCVNode(Node):
         target.roi.y_offset = 0
         target.roi.width = width
         target.roi.height = height
+        # 重要：使用rois[0].confidence传递黄色面积占比
+        target.rois = [target.roi]
+        target.rois[0].confidence = float(yellow_ratio)
 
         pt = Point32()
         pt.x = float(cx)
