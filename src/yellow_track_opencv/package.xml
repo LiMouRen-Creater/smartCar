@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypesvc="http://www.w3.org/2001/XMLSchema-instance"?>
+<package format="3">
+  <name>yellow_track_opencv</name>
+  <version>0.0.1</version>
+  <description>基于OpenCV的黄色车道线检测节点
+
+通过HSV颜色阈值提取黄色车道线区域，
+使用滑动窗口或轮廓检测计算车道线中心点。
+订阅共享内存NV12图像，发布黄色车道线中心点坐标到 /yellow_track_center。
+  </description>
+  <maintainer email="user@todo.todo">user</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>ai_msgs</depend>
+  <depend>hbm_img_msgs</depend>
+  <depend>cv_bridge</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

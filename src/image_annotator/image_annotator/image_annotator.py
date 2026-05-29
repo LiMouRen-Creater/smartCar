@@ -125,7 +125,11 @@ class ImageAnnotator(Node):
         if self.track_msg:
             bgr_img = self.draw_track_center(bgr_img, self.track_msg)
 
-        # 第4步：将标注后的BGR图像编码为JPEG并发布
+        # 第4步：如果有黄色车道线检测结果，绘制中心点
+        if self.yellow_track_msg:
+            bgr_img = self.draw_yellow_track_center(bgr_img, self.yellow_track_msg)
+
+        # 第5步：将标注后的BGR图像编码为JPEG并发布
         try:
             _, jpeg_data = cv2.imencode(
                 '.jpg', bgr_img, [cv2.IMWRITE_JPEG_QUALITY, 30])
@@ -143,6 +147,10 @@ class ImageAnnotator(Node):
     def track_callback(self, msg):
         """缓存最新的黑线中心检测结果"""
         self.track_msg = msg
+
+    def yellow_track_callback(self, msg):
+        """缓存最新的黄色车道线检测结果"""
+        self.yellow_track_msg = msg
 
     def draw_yolo_results(self, img, msg):
         """在图像上绘制YOLO检测框
@@ -217,6 +225,39 @@ class ImageAnnotator(Node):
                         cv2.circle(
                             img, (x, y), 4,
                             self.COLORS['track_center'], -1)
+
+        return img
+
+    def draw_yellow_track_center(self, img, msg):
+        """在图像上绘制黄色车道线中心点
+
+        使用橙色十字标记和实心圆点（区别于黄色的黑线中心）
+        只绘制在640x480图像范围内的有效坐标
+        """
+        if not msg or not msg.targets:
+            return img
+
+        for target in msg.targets:
+            if target.type != 'yellow_track_center':
+                continue
+
+            for point_group in target.points:
+                for pt in point_group.point:
+                    x, y = int(pt.x), int(pt.y)
+
+                    # 检查坐标是否在图像范围内
+                    if 0 <= x < 640 and 0 <= y < 480:
+                        # 绘制菱形标记（区别于黑线中心的十字标记）
+                        pts = np.array([
+                            [x, y - 10], [x + 10, y],
+                            [x, y + 10], [x - 10, y]
+                        ], np.int32)
+                        cv2.fillPoly(img, [pts],
+                                     self.COLORS['yellow_track_center'])
+                        # 绘制橙色实心圆点
+                        cv2.circle(
+                            img, (x, y), 4,
+                            self.COLORS['yellow_track_center'], -1)
 
         return img
 

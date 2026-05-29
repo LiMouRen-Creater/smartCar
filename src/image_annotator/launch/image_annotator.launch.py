@@ -42,7 +42,31 @@ def generate_launch_description():
             'usb_video_device': LaunchConfiguration('device'),
         }.items())
 
-    # 2. NV12解码节点（JPEG转NV12到共享内存）
+    # 2. OpenCV黄色车道线检测节点（HSV黄色提取 + 轮廓中心检测）
+    yellow_track_node = Node(
+        package='yellow_track_opencv',
+        executable='yellow_track_opencv',
+        name='yellow_track_opencv',
+        output='screen',
+        parameters=[{
+            'hsv_h_min': 15, 'hsv_h_max': 35,
+            'hsv_s_min': 80, 'hsv_s_max': 255,
+            'hsv_v_min': 80, 'hsv_v_max': 255,
+            'roi_top': 240, 'roi_bottom': 480,
+            'roi_left': 0, 'roi_right': 640,
+            'min_contour_area': 200.0,
+            'morph_kernel_size': 5,
+            'detection_method': 0,
+            'sub_img_topic': '/hbmem_img',
+            'pub_topic': '/yellow_track_center',
+            'debug_output': False,
+            'visualize': False,
+        }],
+        arguments=['--ros-args', '--log-level', 'info'],
+        emulate_tty=True,
+    )
+
+    # 3. NV12解码节点（JPEG转NV12到共享内存）
     nv12_decode_node = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             get_package_share_directory('hobot_codec')
@@ -110,6 +134,7 @@ def generate_launch_description():
 
     return LaunchDescription(launch_args + [
         usb_node,
+        yellow_track_node,
         nv12_decode_node,
         racing_obstacle_detection_yolo,
         racing_track_detection_resnet,
