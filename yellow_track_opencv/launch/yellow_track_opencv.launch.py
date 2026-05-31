@@ -90,7 +90,7 @@ def generate_launch_description():
     # 话题参数
     # ============================================================
     sub_img_topic_arg = DeclareLaunchArgument(
-        'sub_img_topic', default_value='/hbmem_img',
+        'sub_img_topic', default_value='/nv12_img',
         description='订阅的共享内存图像话题')
 
     pub_topic_arg = DeclareLaunchArgument(

@@ -180,7 +180,7 @@ void TrackDetectionNode::subscription_callback(
   cv::Mat img_mat(msg->height * 3 / 2, msg->width, CV_8UC1, (void*)(msg->data.data()));
   cv::Range rowRange(roi.top, 480);
   cv::Range colRange(roi.left, 640);
-  cv::Mat crop_img_mat = hobot_cv::hobotcv_crop(img_mat, msg->height, msg->width, 224, 224, rowRange, colRange);
+  cv::Mat crop_img_mat = hobot_cv::hobotcv_crop(img_mat, msg->height, msg->width, 224, 224, rowRange, colRange, hobot_cv::HOBOTCV_CPU);
 
   std::shared_ptr<hobot::easy_dnn::NV12PyramidInput> pyramid = nullptr;
   pyramid = hobot::dnn_node::ImageProc::GetNV12PyramidFromNV12Img(

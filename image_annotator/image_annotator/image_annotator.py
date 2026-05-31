@@ -44,15 +44,17 @@ class ImageAnnotator(Node):
         # 缓存最新的检测结果消息
         self.obstacle_msg = None  # YOLO障碍物检测结果
         self.track_msg = None     # ResNet黑线中心检测结果
+        self.yellow_track_msg = None  # 黄色车道线检测结果
 
         # 各类别的BGR颜色定义 (Blue, Green, Red)
         self.COLORS = {
-            'construction_cone': (0, 0, 255),      # 红色 - 锥桶
-            'qrcode':            (255, 0, 0),      # 蓝色 - 二维码
-            'p':                 (0, 255, 0),      # 绿色 - p点（终点）
-            'signboard':         (255, 0, 255),    # 紫色 - 图文标识牌（二期）
-            'track_center':      (0, 255, 255),    # 黄色 - 黑线中心
-            'default':           (255, 255, 255),  # 白色 - 其他
+            'construction_cone':  (0, 0, 255),      # 红色 - 锥桶
+            'qrcode':             (255, 0, 0),      # 蓝色 - 二维码
+            'p':                  (0, 255, 0),      # 绿色 - p点（终点）
+            'signboard':          (255, 0, 255),    # 紫色 - 图文标识牌（二期）
+            'track_center':       (0, 255, 255),    # 黄色 - 黑线中心
+            'yellow_track_center':(0, 165, 255),    # 橙色 - 黄色车道线中心
+            'default':            (255, 255, 255),  # 白色 - 其他
         }
 
         # QoS配置：尽力传输、深度1，适合低延迟场景
@@ -75,6 +77,11 @@ class ImageAnnotator(Node):
             PerceptionTargets, '/racing_track_center_detection',
             self.track_callback, qos)
 
+        # 订阅黄色车道线检测结果
+        self.sub_yellow_track = self.create_subscription(
+            PerceptionTargets, '/yellow_track_center',
+            self.yellow_track_callback, qos)
+
         # 发布标注后的JPEG图像
         self.pub_annotated = self.create_publisher(
             CompressedImage, '/image_annotated', 10)
@@ -88,9 +95,14 @@ class ImageAnnotator(Node):
 
         NV12内存布局：先Y平面(H*W字节)，后UV交错平面(H/2*W字节)
         使用OpenCV的颜色转换函数获得最佳性能
+
+        注意：共享内存中HbmMsg1080P的data是整个buffer，
+        height/width是解码后分辨率，需要精确截取NV12帧数据。
         """
-        # 将字节数据转换为numpy数组
-        data = np.frombuffer(data, dtype=np.uint8)
+        # NV12帧的精确字节数 = width * height * 3/2
+        frame_size = height * width * 3 // 2
+        # 将字节数据转换为numpy数组（精确截取帧大小）
+        data = np.frombuffer(data[:frame_size], dtype=np.uint8)
 
         # 分离Y平面（亮度）和UV平面（色度）
         y_size = height * width

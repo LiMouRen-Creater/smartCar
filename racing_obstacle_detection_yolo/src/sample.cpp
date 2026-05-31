@@ -40,8 +40,6 @@ int ResizeNV12Img(const char* in_img_data,
                   const int& scaled_img_width,
                   cv::Mat& out_img,
                   float& ratio) {
-  cv::Mat src(
-      in_img_height * 3 / 2, in_img_width, CV_8UC1, (void*)(in_img_data));
   float ratio_w =
       static_cast<float>(in_img_width) / static_cast<float>(scaled_img_width);
   float ratio_h =
@@ -56,21 +54,28 @@ int ResizeNV12Img(const char* in_img_data,
     resized_height = scaled_img_height;
   }
 
-  // hobot_cv要求输出宽度为16的倍数
+  // 宽度对齐16，高度对齐2
   int remain = resized_width % 16;
   if (remain != 0) {
-    //向下取16倍数，重新计算缩放系数
     resized_width -= remain;
     dst_ratio = static_cast<float>(in_img_width) / resized_width;
     resized_height = static_cast<float>(in_img_height) / dst_ratio;
   }
-  //高度向下取偶数
   resized_height =
       resized_height % 2 == 0 ? resized_height : resized_height - 1;
   ratio = dst_ratio;
 
-  return hobot_cv::hobotcv_resize(
-      src, in_img_height, in_img_width, out_img, resized_height, resized_width);
+  // 用 OpenCV 软件 resize NV12，避免与 hobot_codec 争用 VPS 硬件通道
+  cv::Mat y_src(in_img_height, in_img_width, CV_8UC1, (void*)in_img_data);
+  cv::Mat uv_src(in_img_height / 2, in_img_width, CV_8UC1,
+                 (void*)(in_img_data + in_img_height * in_img_width));
+  cv::Mat y_dst, uv_dst;
+  cv::resize(y_src, y_dst, cv::Size(resized_width, resized_height), 0, 0, cv::INTER_LINEAR);
+  cv::resize(uv_src, uv_dst, cv::Size(resized_width, resized_height / 2), 0, 0, cv::INTER_LINEAR);
+  out_img.create(resized_height * 3 / 2, resized_width, CV_8UC1);
+  y_dst.copyTo(out_img(cv::Rect(0, 0, resized_width, resized_height)));
+  uv_dst.copyTo(out_img(cv::Rect(0, resized_height, resized_width, resized_height / 2)));
+  return 0;
 }
 
 int InitClassNames(const std::string &cls_name_file,hobot::dnn_node::racing_obstacle_detection::PTQYolo5Config &yolo5_config) {

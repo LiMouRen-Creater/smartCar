@@ -23,7 +23,8 @@ public:
         racing_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
             "/racing", qos, std::bind(&ChassisController::racing_callback, this, std::placeholders::_1));
 
-        // ¢QR!À;×Sracing_controlŽQR¶:ö†Öcmd_vel
+        // post QR subscribe: when racing_control enables post QR mode,
+        // control_master relays cmd_vel
         post_qr_sub_ = this->create_subscription<std_msgs::msg::Bool>(
             "/post_qr_active", 10, std::bind(&ChassisController::post_qr_callback, this, std::placeholders::_1));
 
@@ -68,11 +69,11 @@ private:
         post_qr_active_ = msg->data;
         if (post_qr_active_)
         {
-            RCLCPP_INFO(this->get_logger(), "QR!À;control_master†Öcmd_vel");
+            RCLCPP_INFO(this->get_logger(), "post QR active: control_master relays cmd_vel");
         }
         else
         {
-            RCLCPP_INFO(this->get_logger(), "QR!Ó_control_masterb§6");
+            RCLCPP_INFO(this->get_logger(), "post QR inactive: control_master back to normal");
         }
     }
 
@@ -81,10 +82,12 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         geometry_msgs::msg::Twist output_cmd;
 
-        // QR!racing_controlô¥Ñcmd_velÏÇcontrol_master„/cmd_vel
+        // When post QR active, racing_control sends cmd_vel directly
+        // control_master stops publishing to /cmd_vel
         if (post_qr_active_)
         {
-            // döracing_controlòÏÑ0/racingFcontrol_masterZlÑ
+            // racing_control publishes to /racing with zero values,
+            // control_master just returns without forwarding
             return;
         }
 
@@ -113,7 +116,7 @@ private:
     geometry_msgs::msg::Twist racing_cmd_ = geometry_msgs::msg::Twist();
     bool qrcode_detected_;
     bool p_detected_;
-    bool post_qr_active_;  // QR!×
+    bool post_qr_active_;  // post QR flag
 
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr post_qr_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr p_sub_;

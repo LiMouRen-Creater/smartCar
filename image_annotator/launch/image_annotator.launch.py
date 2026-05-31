@@ -79,6 +79,8 @@ def generate_launch_description():
             'codec_out_mode': 'shared_mem',
             'codec_sub_topic': '/hbmem_img',
             'codec_pub_topic': '/nv12_img',
+            'src_image_width': '640',
+            'src_image_height': '480',
         }.items())
 
     # 3. YOLO障碍物检测

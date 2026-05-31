@@ -55,7 +55,7 @@ class YellowTrackOpenCVNode(Node):
         self.declare_parameter('hsv_v_max', 255)
 
         # ROI感兴趣区域（在640x480图像中选取下方区域）
-        self.declare_parameter('roi_top', 240)
+        self.declare_parameter('roi_top', 180)
         self.declare_parameter('roi_bottom', 480)
         self.declare_parameter('roi_left', 0)
         self.declare_parameter('roi_right', 640)
@@ -342,7 +342,7 @@ class YellowTrackOpenCVNode(Node):
             msg.data = jpeg_data.tobytes()
             self.debug_pub_.publish(msg)
 
-        return cx, cy
+        return cx, cy, yellow_ratio
 
     def img_callback(self, msg):
         """共享内存图像订阅回调"""
@@ -383,13 +383,15 @@ class YellowTrackOpenCVNode(Node):
 
         target = Target()
         target.type = 'yellow_track_center'
-        target.roi.x_offset = 0
-        target.roi.y_offset = 0
-        target.roi.width = width
-        target.roi.height = height
-        # 重要：使用rois[0].confidence传递黄色面积占比
-        target.rois = [target.roi]
-        target.rois[0].confidence = float(yellow_ratio)
+        # rois 是列表，直接设置第一个元素
+        from ai_msgs.msg import Roi
+        roi = Roi()
+        roi.rect.x_offset = 0
+        roi.rect.y_offset = 0
+        roi.rect.width = width
+        roi.rect.height = height
+        roi.confidence = float(yellow_ratio)
+        target.rois = [roi]
 
         pt = Point32()
         pt.x = float(cx)
