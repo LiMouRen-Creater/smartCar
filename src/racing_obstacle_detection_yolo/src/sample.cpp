@@ -190,8 +190,8 @@ class ObstacleDetectionNode : public hobot::dnn_node::DnnNode {
     {{{10, 13}, {16, 30}, {33, 23}},
      {{30, 61}, {62, 45}, {59, 119}},
      {{116, 90}, {156, 198}, {373, 326}}},
-    1,
-    {"construction_cone"}};
+    6,
+    {"zt", "qrcode", "p", "line", "tong", "dao"}};
 
   // 图片消息订阅回调
   void FeedHbmImg(const hbm_img_msgs::msg::HbmMsg1080P::ConstSharedPtr msg);

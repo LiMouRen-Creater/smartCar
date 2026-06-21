@@ -1,10 +1,10 @@
 {
-	"model_file": "/root/dev_ws/src/racing_obstacle_detection_yolo/config/converted_model.bin",
-	"model_name": "converted_model",
+	"model_file": "/root/dev_ws/src/racing_obstacle_detection_yolo/config/racing_yolov5s_640x640_nv12.bin",
+	"model_name": "racing_yolov5s_640x640_nv12",
 	"task_num": 4,
 	"dnn_Parser": "yolov5x",
 	"model_output_count": 3,
-	"class_num": 4,
+	"class_num": 6,
 	"cls_names_list": "/root/dev_ws/src/racing_obstacle_detection_yolo/config/obstacles.list",
 	"strides": [8, 16, 32],
 	"anchors_table": [[[10, 13], [16, 30], [33, 23]], [[30, 61], [62, 45], [59, 119]], [[116, 90], [156, 198], [373, 326]]],
