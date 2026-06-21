@@ -1,0 +1,407 @@
+# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+
+import os
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+import numpy as np
+import cv2
+from std_msgs.msg import Float32, Int32
+from sensor_msgs.msg import CompressedImage
+from hbm_img_msgs.msg import HbmMsg1080P
+
+
+# ============================================================
+# 纯感知/逻辑函数（不依赖ROS，方便单独测试，已经离线验证过）
+# ============================================================
+
+def get_mask(region_bgr, hsv_lower, hsv_upper, denoise_ksize):
+    hsv = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
+    if denoise_ksize > 0:
+        k = denoise_ksize * 2 + 1
+        kernel = np.ones((k, k), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    return mask
+
+
+def compute_bottom_anchored_depth(mask):
+#    """
+#    每一列，从ROI底部往上数，连续路面(非边界色)像素的个数；
+#    一旦遇到边界色就停止增长(即使更上面又变回路面，也不会被这一列继续计入)。
+#    孤岛(挡在路中间的边界色块)天然会让经过它的列深度变浅，不需要额外排除逻辑。
+#    """
+    binary = (mask == 0)
+    h, w = binary.shape
+    depth = np.zeros(w, dtype=np.int32)
+    blocked = np.zeros(w, dtype=bool)
+    for row in range(h - 1, -1, -1):
+        is_path = binary[row, :]
+        depth = np.where((~blocked) & is_path, depth + 1, depth)
+        blocked = blocked | (~is_path)
+    return depth
+
+
+def find_divider_column(depth, plateau_ratio):
+#    """找深度最大的列；多列并列最大(常见于直线段)时取并列区间正中间那一列"""
+    peak = depth.max()
+    if peak <= 0:
+        return None
+    plateau_idx = np.where(depth >= plateau_ratio * peak)[0]
+    return int(plateau_idx[len(plateau_idx) // 2])
+
+
+def find_anchor_row(roi_h, depth, divider_x):
+    d = depth[divider_x]
+    if d >= roi_h:
+        return 0
+    return roi_h - d
+
+
+def scan_left_right(mask, anchor_row, divider_x):
+    row = mask[anchor_row, :]
+    w = len(row)
+    left_x = None
+    for x in range(divider_x, -1, -1):
+        if row[x] > 0:
+            left_x = x
+            break
+    right_x = None
+    for x in range(divider_x, w):
+        if row[x] > 0:
+            right_x = x
+            break
+    return left_x, right_x
+
+
+def compute_mid_x(left_x, right_x, ref_width):
+    if left_x is not None and right_x is not None:
+        return (left_x + right_x) / 2.0, (right_x - left_x)
+    elif left_x is not None:
+        mid = left_x + ref_width / 2.0 if ref_width is not None else float(left_x)
+        return mid, None
+    elif right_x is not None:
+        mid = right_x - ref_width / 2.0 if ref_width is not None else float(right_x)
+        return mid, None
+    else:
+        return None, None
+
+
+def detect_island(mask, area_threshold, width_frac_threshold=0.5):
+#    """检测跟主边界带分离的独立连通域(孤岛)，纯逐帧判断，不依赖历史状态"""
+    h, w = mask.shape
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    main_band_idx, main_band_area = None, -1
+    for i, c in enumerate(contours):
+        x, y, cw, ch = cv2.boundingRect(c)
+        if y <= 1 and cw >= width_frac_threshold * w:
+            area = cv2.contourArea(c)
+            if area > main_band_area:
+                main_band_area = area
+                main_band_idx = i
+    best, best_area = None, -1
+    for i, c in enumerate(contours):
+        if i == main_band_idx:
+            continue
+        area = cv2.contourArea(c)
+        if area >= area_threshold and area > best_area:
+            best_area = area
+            best = c
+    if best is None:
+        return None
+    x, y, cw, ch = cv2.boundingRect(best)
+    return {"area": best_area, "bbox": (x, y, cw, ch), "centroid": (x + cw / 2.0, y + ch / 2.0)}
+
+
+# ============================================================
+# ROS节点
+# ============================================================
+
+class TrackCenterDetectionNode(Node):
+    def __init__(self):
+        super().__init__('track_center_detection')
+
+        self.web_show = os.getenv('WEB_SHOW_OPENCV') == 'TRUE'
+        self.get_logger().warn(f'web_show={self.web_show}')
+
+        # ---- HSV ----
+        self.declare_parameter('h_min', 75)
+        self.declare_parameter('h_max', 140)
+        self.declare_parameter('s_min', 0)
+        self.declare_parameter('s_max', 255)
+        self.declare_parameter('v_min', 0)
+        self.declare_parameter('v_max', 255)
+        self.declare_parameter('denoise_ksize', 3)
+
+        # ---- 主ROI(算中心点用) ----
+        self.declare_parameter('roi_top', 0.40)
+        self.declare_parameter('roi_bottom', 0.75)
+
+        # ---- 孤岛检测ROI(可以跟主ROI不一样，看得更远) ----
+        self.declare_parameter('island_roi_top', 0.15)
+        self.declare_parameter('island_roi_bottom', 0.45)
+
+        # ---- 最长黑列法参数 ----
+        self.declare_parameter('plateau_ratio', 0.98)
+
+        # ---- 目标位置(按方向区分，万一摄像头不是绝对居中) ----
+        self.declare_parameter('target_x_default', 320.0)
+        self.declare_parameter('target_x_cw', 320.0)
+        self.declare_parameter('target_x_ccw', 320.0)
+
+        # ---- 孤岛/盲转参数 ----
+        self.declare_parameter('island_area_thresh', 5000)
+        self.declare_parameter('shrink_thresh', 5000)
+        self.declare_parameter('confirm_frames', 3)
+        self.declare_parameter('amplify', 3.0)
+
+        # ---- 孤岛预期方位(仅诊断提示，不做硬过滤，方向映射需要实测确认) ----
+        self.declare_parameter('island_side_cw', 'left')
+        self.declare_parameter('island_side_ccw', 'right')
+
+        # ---- 赛道宽度记忆(滑动平均) ----
+        self.declare_parameter('width_ema_alpha', 0.1)
+
+        # ---- 丢线时的error ----
+        self.declare_parameter('lost_error', 80.0)
+
+        self.direction = 0  # 0=未知/默认, 3=顺时针, 4=逆时针(跟参考代码保持一致的编码)
+
+        # ---- 跨帧记忆状态(不是ROS参数，是运行时状态，不需要外部重新配置) ----
+        self.ref_width = None
+        self.have_seen_island = False
+        self.shrink_streak = 0
+        self.recover_streak = 0
+        self.in_blind_turn = False
+        self.frozen_error = 0.0
+        self.last_reliable_error = 0.0
+
+        qos = QoSProfile(depth=1)
+        qos.reliability = ReliabilityPolicy.BEST_EFFORT
+
+        self.img_sub = self.create_subscription(
+            HbmMsg1080P, '/nv12_img', self.img_callback, qos)
+
+        self.direction_sub = self.create_subscription(
+            Int32, '/yellow_direction', self.direction_callback, 10)
+
+        self.pub = self.create_publisher(Float32, '/track_center_error', 10)
+
+        if self.web_show:
+            self.vis_pub = self.create_publisher(
+                CompressedImage, '/track_center_vis', 10)
+
+        self.get_logger().info('TrackCenterDetectionNode started (列扫描法+孤岛+盲转)')
+
+    # --------------------------------------------------------
+
+    def direction_callback(self, msg):
+        self.direction = msg.data
+        self.get_logger().info(f'Direction received: {self.direction}')
+
+    def img_callback(self, msg: HbmMsg1080P):
+        if not msg or msg.data_size == 0:
+            return
+
+        h_min = self.get_parameter('h_min').value
+        h_max = self.get_parameter('h_max').value
+        s_min = self.get_parameter('s_min').value
+        s_max = self.get_parameter('s_max').value
+        v_min = self.get_parameter('v_min').value
+        v_max = self.get_parameter('v_max').value
+        denoise_ksize = self.get_parameter('denoise_ksize').value
+
+        roi_top_pct = self.get_parameter('roi_top').value
+        roi_bottom_pct = self.get_parameter('roi_bottom').value
+        island_roi_top_pct = self.get_parameter('island_roi_top').value
+        island_roi_bottom_pct = self.get_parameter('island_roi_bottom').value
+
+        plateau_ratio = self.get_parameter('plateau_ratio').value
+
+        target_x_default = self.get_parameter('target_x_default').value
+        target_x_cw = self.get_parameter('target_x_cw').value
+        target_x_ccw = self.get_parameter('target_x_ccw').value
+
+        island_area_thresh = self.get_parameter('island_area_thresh').value
+        shrink_thresh = self.get_parameter('shrink_thresh').value
+        confirm_frames = self.get_parameter('confirm_frames').value
+        amplify = self.get_parameter('amplify').value
+
+        island_side_cw = self.get_parameter('island_side_cw').value
+        island_side_ccw = self.get_parameter('island_side_ccw').value
+
+        width_ema_alpha = self.get_parameter('width_ema_alpha').value
+        lost_error = self.get_parameter('lost_error').value
+
+        if self.direction == 3:
+            target_x = target_x_cw
+            expected_island_side = island_side_cw
+        elif self.direction == 4:
+            target_x = target_x_ccw
+            expected_island_side = island_side_ccw
+        else:
+            target_x = target_x_default
+            expected_island_side = None
+
+        height = msg.height
+        width = msg.width
+        actual_size = height * width * 3 // 2
+        nv12 = np.frombuffer(msg.data, dtype=np.uint8)[:actual_size].reshape(height * 3 // 2, width)
+        bgr = cv2.cvtColor(nv12, cv2.COLOR_YUV2BGR_NV12)
+
+        hsv_lower = np.array([h_min, s_min, v_min])
+        hsv_upper = np.array([h_max, s_max, v_max])
+
+        # ---------- 主ROI: 算中心点 ----------
+        roi_top = int(height * roi_top_pct)
+        roi_bottom = int(height * roi_bottom_pct)
+        roi = bgr[roi_top:roi_bottom, :]
+        roi_h = roi.shape[0]
+
+        mask = get_mask(roi, hsv_lower, hsv_upper, denoise_ksize)
+
+        visual_error = None
+        left_x, right_x, divider_x, anchor_row = None, None, None, None
+        depth = compute_bottom_anchored_depth(mask)
+        divider_x = find_divider_column(depth, plateau_ratio)
+        if divider_x is not None:
+            anchor_row = find_anchor_row(roi_h, depth, divider_x)
+            left_x, right_x = scan_left_right(mask, anchor_row, divider_x)
+            mid_x, measured_width = compute_mid_x(left_x, right_x, self.ref_width)
+            if measured_width is not None and measured_width > 0:
+                if self.ref_width is None:
+                    self.ref_width = float(measured_width)
+                else:
+                    self.ref_width = (1 - width_ema_alpha) * self.ref_width + \
+                                      width_ema_alpha * measured_width
+            if mid_x is not None:
+                visual_error = target_x - mid_x
+
+        # ---------- 孤岛检测ROI(可以跟主ROI不一样的范围) ----------
+        isl_top = int(height * island_roi_top_pct)
+        isl_bottom = int(height * island_roi_bottom_pct)
+        island_roi = bgr[isl_top:isl_bottom, :]
+        island_mask = get_mask(island_roi, hsv_lower, hsv_upper, denoise_ksize)
+        island = detect_island(island_mask, island_area_thresh)
+
+        if island is not None and expected_island_side is not None:
+            island_w = island_roi.shape[1]
+            actual_side = 'left' if island['centroid'][0] < island_w / 2 else 'right'
+            if actual_side != expected_island_side:
+                self.get_logger().warn(
+                    f'孤岛出现在意料之外的一侧(预期{expected_island_side}, 实际{actual_side})，'
+                    f'仍按正常孤岛处理，仅提示，请实测确认direction与孤岛方位的对应关系是否正确')
+
+        # ---------- 跨帧状态机：决定这一帧实际用哪个error ----------
+        error = self._update_state_and_get_error(
+            island, visual_error, shrink_thresh, confirm_frames, amplify, lost_error)
+
+        msg_out = Float32()
+        msg_out.data = float(error)
+        self.pub.publish(msg_out)
+
+        if self.web_show:
+            self._publish_vis(bgr, mask, island_mask, roi_top, roi_bottom,
+                               isl_top, isl_bottom, width, target_x, error,
+                               visual_error, left_x, right_x, island)
+
+    # --------------------------------------------------------
+
+    def _update_state_and_get_error(self, island, visual_error,
+                                     shrink_thresh, confirm_frames, amplify, lost_error):
+#        """
+#        简单变量+if实现的盲转状态机(没有用正式的状态机框架)：
+#          - 孤岛持续缩小/消失达到confirm_frames帧 -> 进入盲转，用"上一帧可信error*放大倍数"硬转
+#          - 盲转期间孤岛/视觉连续恢复达到confirm_frames帧 -> 解除盲转，回到正常视觉控制
+#        天然支持连续多个90度弯：判断条件只看"当前有没有孤岛"，跟"第几个弯"无关。
+#        """
+        island_area = island["area"] if island is not None else None
+
+        if island_area is not None:
+            self.have_seen_island = True
+            self.shrink_streak = self.shrink_streak + 1 if island_area < shrink_thresh else 0
+            self.recover_streak = 0
+        else:
+            if self.have_seen_island:
+                self.shrink_streak += 1
+            self.recover_streak += 1
+
+        if (not self.in_blind_turn) and self.have_seen_island and \
+                self.shrink_streak >= confirm_frames:
+            self.in_blind_turn = True
+            self.frozen_error = self.last_reliable_error * amplify
+            self.have_seen_island = False
+            self.shrink_streak = 0
+            self.get_logger().info(
+                f'进入盲转: frozen_error={self.frozen_error:.2f} '
+                f'(last_reliable_error={self.last_reliable_error:.2f} * amplify={amplify})')
+
+        if self.in_blind_turn:
+            error = self.frozen_error
+            if self.recover_streak >= confirm_frames:
+                self.in_blind_turn = False
+                self.get_logger().info('解除盲转，恢复视觉控制')
+        else:
+            if visual_error is not None:
+                error = visual_error
+                self.last_reliable_error = error
+            elif self.have_seen_island or self.in_blind_turn:
+                # 还没到盲转触发条件，但这一帧视觉检测失败了，沿用上一次可信值
+                error = self.last_reliable_error
+            else:
+                # 从来没看到过孤岛、这一帧视觉也彻底失败(比如刚启动还没找到线)
+                error = lost_error
+
+        return error
+
+    # --------------------------------------------------------
+
+    def _publish_vis(self, bgr, mask, island_mask, roi_top, roi_bottom,
+                      isl_top, isl_bottom, width, target_x, error,
+                      visual_error, left_x, right_x, island):
+        vis = bgr.copy()
+
+        cv2.rectangle(vis, (0, roi_top), (width - 1, roi_bottom), (0, 255, 255), 2)
+        cv2.rectangle(vis, (0, isl_top), (width - 1, isl_bottom), (255, 255, 0), 2)
+
+        mask_color = np.zeros_like(vis[roi_top:roi_bottom, :])
+        mask_color[mask > 0] = (0, 200, 0)
+        vis[roi_top:roi_bottom, :] = cv2.addWeighted(
+            vis[roi_top:roi_bottom, :], 0.7, mask_color, 0.3, 0)
+
+        tx = int(np.clip(target_x, 0, width - 1))
+        cv2.line(vis, (tx, roi_top), (tx, roi_bottom), (0, 0, 255), 2)
+
+        for x in [left_x, right_x]:
+            if x is not None:
+                cv2.line(vis, (int(x), roi_top), (int(x), roi_bottom), (0, 255, 0), 2)
+
+        if island is not None:
+            x, y, w, h = island["bbox"]
+            cv2.rectangle(vis, (x, isl_top + y), (x + w, isl_top + y + h), (0, 140, 255), 2)
+            cv2.putText(vis, "ISLAND", (x, isl_top + y - 5), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (0, 140, 255), 2, cv2.LINE_AA)
+
+        ve_str = f'{visual_error:.1f}' if visual_error is not None else 'N/A'
+        cv2.putText(vis, f'error:{error:.1f} visual:{ve_str} blind:{self.in_blind_turn} dir:{self.direction}',
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        _, buf = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        vis_msg = CompressedImage()
+        vis_msg.header.stamp = self.get_clock().now().to_msg()
+        vis_msg.format = 'jpeg'
+        vis_msg.data = buf.tobytes()
+        self.vis_pub.publish(vis_msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TrackCenterDetectionNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

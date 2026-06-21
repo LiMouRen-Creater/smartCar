@@ -102,8 +102,8 @@ def generate_launch_description():
     
     yellow_track_opencv = IncludeLaunchDescription(PythonLaunchDescriptionSource(
                                         get_package_share_directory('yellow_track_opencv') + '/launch/yellow_track_opencv.launch.py'))
-                                        
-                                        
+    yellow_track_opencv_0621 = IncludeLaunchDescription(PythonLaunchDescriptionSource(
+                     get_package_share_directory('yellow_track_opencv') + '/launch/yellow_track_opencv_0621.launch.py'))                                                                  
     return LaunchDescription(launch_args + [
         usb_node,
         nv12_decode_node,
@@ -115,7 +115,8 @@ def generate_launch_description():
         racing_obstacle_detection_yolo,
         rosbridge_node,
         origincar_base,
-        yellow_track_opencv,
+#        yellow_track_opencv,
         racing_control_fsm,
+        yellow_track_opencv_0621,
 #        racing_control,
     ])

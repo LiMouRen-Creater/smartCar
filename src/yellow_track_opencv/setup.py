@@ -10,7 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/yellow_track_opencv.launch.py']), 
+        ('share/' + package_name + '/launch', ['launch/yellow_track_opencv.launch.py', 'launch/yellow_track_opencv_0621.launch.py']), 
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'yellow_track_opencv = yellow_track_opencv.yellow_track_opencv:main',
+            'yellow_track_opencv_0621 = yellow_track_opencv.yellow_track_opencv_0621:main',
         ],
     },
 )
