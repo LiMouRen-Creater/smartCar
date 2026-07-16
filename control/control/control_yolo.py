@@ -28,6 +28,9 @@ class Control_yolo(Node):
         self.declare_parameter('kp_avoid', 0.0035)
         self.kp_avoid = self.get_parameter('kp_avoid').value
 
+        self.declare_parameter('n_avoid', 3)
+        self.n_avoid = self.get_parameter('n_avoid').value
+
         qos_profile = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -63,6 +66,8 @@ class Control_yolo(Node):
         self.avoid_counter = 0
         self.avoid_direction = 0
         self.avoid_error_last = 0.0
+        self.avoid_missing_counter = 0
+        self.last_avoid_twist = Twist()
 
         self.get_logger().info(f"control_yolo节点已启动")
 
@@ -252,23 +257,35 @@ class Control_yolo(Node):
                     twist.linear.x = float(self.v_avoid)
                     twist.angular.z = float(angular_z)
                     self.publisher.publish(twist)
+                    self.last_avoid_twist = twist
+                    self.avoid_missing_counter = 0
                     self.avoid_ing = 5
                 else:
-                    self.avoid_ing = 0
-                    self.avoid_counter = 0
-                    self.avoid_direction = 0
-                    self.avoid_error_last = 0.0
+                    self.hold_or_reset_avoid()
             else:
-                self.avoid_ing = 0
-                self.avoid_counter = 0
-                self.avoid_direction = 0
-                self.avoid_error_last = 0.0
+                self.hold_or_reset_avoid()
 
             msg_avoid = Int32()
             msg_avoid.data = self.avoid_ing
             self.pub_avoid_ing.publish(msg_avoid)
         except Exception as e:
             self.get_logger().error(f"处理数据异常: {e}")
+
+    def hold_or_reset_avoid(self):
+        if self.avoid_ing > 0 and self.avoid_missing_counter < self.n_avoid:
+            self.avoid_missing_counter += 1
+            self.publisher.publish(self.last_avoid_twist)
+            self.get_logger().info(
+                f"锥桶短暂丢失，保持避障: {self.avoid_missing_counter}/{self.n_avoid}"
+            )
+            return
+
+        self.avoid_ing = 0
+        self.avoid_counter = 0
+        self.avoid_direction = 0
+        self.avoid_error_last = 0.0
+        self.avoid_missing_counter = 0
+        self.last_avoid_twist = Twist()
 
 def main(args=None):
     rclpy.init(args=args)

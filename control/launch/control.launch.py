@@ -11,6 +11,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument('v_avoid', default_value='0.8'),
         DeclareLaunchArgument('kp_avoid', default_value='0.0035'),
+        DeclareLaunchArgument('n_avoid', default_value='3'),
 
         DeclareLaunchArgument('y_zt', default_value='155'),
         DeclareLaunchArgument('y_p', default_value='435'), 
@@ -24,6 +25,7 @@ def generate_launch_description():
             parameters=[{
                 'v_avoid': LaunchConfiguration('v_avoid'),
                 'kp_avoid': LaunchConfiguration('kp_avoid'),
+                'n_avoid': LaunchConfiguration('n_avoid'),
 
                 'y_p': LaunchConfiguration('y_p'),
                 'y_zt': LaunchConfiguration('y_zt'),
