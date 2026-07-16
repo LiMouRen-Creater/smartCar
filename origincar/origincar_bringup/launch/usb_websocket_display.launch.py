@@ -19,6 +19,7 @@ def generate_launch_description():
         DeclareLaunchArgument("dnn_example_image_height", default_value=TextSubstitution(text="272")),
         DeclareLaunchArgument("dnn_example_msg_pub_topic_name", default_value=TextSubstitution(text="hobot_dnn_detection")),
         DeclareLaunchArgument('device', default_value='/dev/video0', description='usb camera device'),
+        DeclareLaunchArgument('save_tuwen_picture', default_value='false'),
     ]
 
     rosbridge_node = ExecuteProcess(
@@ -43,9 +44,13 @@ def generate_launch_description():
                                                                  'codec_in_mode'  : 'shared_mem',    'codec_out_mode'   : 'ros',
                                                                  'codec_sub_topic': '/nv12_img', 'codec_pub_topic'  : '/jpeg_img'}.items())
                                                                  
+    web_tuwen = os.getenv('WEB_TUWEN')
+    websocket_smart_topic = '/tuwen_detection' if web_tuwen == 'TRUE' else '/racing_obstacle_detection'
+
     web_node = IncludeLaunchDescription(PythonLaunchDescriptionSource(get_package_share_directory('websocket') + '/launch/websocket.launch.py'),
-                                        launch_arguments={'websocket_image_topic': '/jpeg_img', 'websocket_image_type': 'mjpeg', # racing_obstacle_detection
-                                                          'websocket_smart_topic': '/racing_obstacle_detection'}.items())    # racing_track_center_detection
+                                        launch_arguments={'websocket_image_topic': '/jpeg_img', 'websocket_image_type': 'mjpeg',
+                                                          'websocket_smart_topic': websocket_smart_topic,
+                                                          'websocket_smart_qos': 'reliable'}.items())
 
     racing_track_detection_resnet_go = IncludeLaunchDescription(PythonLaunchDescriptionSource(
                                         get_package_share_directory('racing_track_detection_resnet_go') + '/launch/racing_track_detection_resnet.launch.py'))
@@ -87,6 +92,9 @@ def generate_launch_description():
         package='vision_language_model',
         executable='vision_language_model',
         output='screen',
+        parameters=[{
+            'save_tuwen_picture': LaunchConfiguration('save_tuwen_picture'),
+        }],
         arguments=['--ros-args', '--log-level', 'info']
     )
 
@@ -153,6 +161,6 @@ def generate_launch_description():
         web_node,
         qrcode_tts_announce,
         hobot_tts,
-        # vision_language_model,
+        vision_language_model,
         # racing_control,
     ])

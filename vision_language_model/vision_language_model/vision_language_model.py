@@ -1,210 +1,183 @@
-# 安装openai
-# pip3 install openai==1.35.9 requests httpx==0.27.2 psutil flask -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
-# 图片自动上传，Token使用警告
-
+import base64
+import os
+import threading
+import time
 
 import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
-from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String
-from ai_msgs.msg import PerceptionTargets
-
-import cv2
-import numpy as np
-import threading
-import base64
 from openai import OpenAI
+from rclpy.node import Node
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Int32, String
 
-class PersonLLMNode(Node):
+
+class TuwenVisionLanguageNode(Node):
     def __init__(self):
-        super().__init__('person_vision_language_node')
+        super().__init__("tuwen_vision_language_node")
 
-        # 初始化大模型客户端
+        self.declare_parameter("save_tuwen_picture", False)
+        self.declare_parameter("tuwen_picture_dir", "/tmp/tuwen")
+        self.declare_parameter("volc_base_url", "https://ai-gateway.vei.volces.com/v1")
+        self.declare_parameter("volc_model", "doubao-vision-lite-32k")
+        self.declare_parameter(
+            "tuwen_prompt",
+            "请用一句简短中文描述图中医院场景下的人物立牌内容。",
+        )
+        self.declare_parameter("vlm_timeout", 8.0)
+
+        self.save_tuwen_picture = self.get_parameter("save_tuwen_picture").value
+        self.tuwen_picture_dir = self.get_parameter("tuwen_picture_dir").value
+        self.volc_model = self.get_parameter("volc_model").value
+        self.tuwen_prompt = self.get_parameter("tuwen_prompt").value
+        self.vlm_timeout = float(self.get_parameter("vlm_timeout").value)
+
+        api_key = os.getenv("VOLCANO_API_KEY") or os.getenv("ARK_API_KEY") or ""
         self.client = OpenAI(
-            base_url="https://ai-gateway.vei.volces.com/v1",
-            api_key="sk-cef8ee22224c458fb589157648c32464jokilryhq2ljpiro",
+            base_url=self.get_parameter("volc_base_url").value,
+            api_key=api_key,
+            timeout=self.vlm_timeout,
         )
 
-        # QoS 设置：尽力而为，历史长度 1
-        qos_best_effort = QoSProfile(
+        qos_image = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             history=QoSHistoryPolicy.KEEP_LAST,
-            depth=1
+            depth=1,
+        )
+        qos_reliable = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
         )
 
-        # 订阅压缩图像
         self.img_sub = self.create_subscription(
             CompressedImage,
-            '/jpeg_img',
+            "/jpeg_img",
             self.image_callback,
-            qos_best_effort
+            qos_image,
+        )
+        self.get_picture_sub = self.create_subscription(
+            Int32,
+            "/get_picture",
+            self.get_picture_callback,
+            qos_reliable,
         )
 
-        # 订阅目标检测结果
-        self.target_sub = self.create_subscription(
-            PerceptionTargets,
-            '/racing_obstacle_detection',
-            self.target_callback,
-            qos_best_effort
+        self.text_pub = self.create_publisher(String, "/tuwen_text", qos_reliable)
+        self.screen_pub = self.create_publisher(String, "/screen_text", qos_reliable)
+        self.legacy_text_pub = self.create_publisher(
+            String, "/vision_language_model", qos_reliable
+        )
+        self.picture_pub = self.create_publisher(
+            CompressedImage, "/tuwen_picture", qos_reliable
+        )
+        self.picture_path_pub = self.create_publisher(
+            String, "/tuwen_picture_path", qos_reliable
         )
 
-        # 发布 VLM 描述结果
-        self.publisher_ = self.create_publisher(
-            String, 
-            '/vision_language_model', 
-            10
-        )
-
-        # 共享数据与互斥锁
-        self.latest_image_data = None
         self.lock = threading.Lock()
-        
-        # 状态标志位：防止大模型请求堆积阻塞
+        self.latest_image_msg = None
         self.is_calling_vlm = False
-        
-        # 图像尺寸常量
-        self.img_width = 1920
-        self.img_height = 1080
+        self.picture_count = 0
 
-    def image_callback(self, msg: CompressedImage):
-        # 极速回调：保存最新字节流引用
+        os.makedirs(self.tuwen_picture_dir, exist_ok=True)
+        self.get_logger().info("tuwen vision language node started")
+
+    def image_callback(self, msg):
         with self.lock:
-            self.latest_image_data = msg.data
+            self.latest_image_msg = msg
 
-    def target_callback(self, msg: PerceptionTargets):
-        # 如果大模型正在推理中，直接丢弃当前帧，防止堆积卡死系统
+    def get_picture_callback(self, msg):
+        if msg.data != 1:
+            return
         if self.is_calling_vlm:
+            self.get_logger().info("VLM is busy, ignore /get_picture")
             return
 
-        # ==========================================
-        # 阶段一：免锁筛选 person 目标
-        # ==========================================
-        best_rect = None
-        max_area = 0
-
-        for target in msg.targets:      
-            if target.type == 'person':
-                for roi in target.rois:
-                    if roi.confidence > 0.8:
-                        bottom_y = roi.rect.y_offset + roi.rect.height
-                        
-                        # 过滤条件: 360-1 <= 底部y坐标 <= 1080-1
-                        if (360 - 1) <= bottom_y <= (self.img_height - 1):
-                            area = roi.rect.width * roi.rect.height
-                            
-                            if area > max_area:
-                                max_area = area
-                                best_rect = roi.rect
-
-        # 没有符合条件的 person，直接跳出
-        if best_rect is None:
-            return
-
-        # ==========================================
-        # 阶段二：极速持锁获取字节流
-        # ==========================================
-        img_bytes = None
         with self.lock:
-            if self.latest_image_data is None:
+            if self.latest_image_msg is None:
+                self.get_logger().warn("no /jpeg_img received yet")
                 return
-            img_bytes = self.latest_image_data
-            
-        # ==========================================
-        # 阶段三：脱离锁解码、裁剪与压缩
-        # ==========================================
-        # 解压为彩色图 (IMREAD_COLOR) 供大模型分析
-        np_arr = np.frombuffer(img_bytes, np.uint8)
-        color_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            image_msg = CompressedImage()
+            image_msg.header = self.latest_image_msg.header
+            image_msg.format = self.latest_image_msg.format
+            image_msg.data = bytes(self.latest_image_msg.data)
 
-        if color_img is None:
-            return
+        image_path = self.save_picture(image_msg.data)
+        self.picture_pub.publish(image_msg)
 
-        # 把检测框扩大 20%
-        center_x = best_rect.x_offset + best_rect.width / 2.0
-        center_y = best_rect.y_offset + best_rect.height / 2.0
-        new_width = best_rect.width * 1.2
-        new_height = best_rect.height * 1.2
+        path_msg = String()
+        path_msg.data = image_path
+        self.picture_path_pub.publish(path_msg)
 
-        # 边界检查
-        x_min = max(0, int(center_x - new_width / 2.0))
-        y_min = max(0, int(center_y - new_height / 2.0))
-        x_max = min(self.img_width, int(center_x + new_width / 2.0))
-        y_max = min(self.img_height, int(center_y + new_height / 2.0))
-
-        if x_max <= x_min or y_max <= y_min:
-            return
-
-        # 裁剪 ROI 区域
-        cropped_roi = color_img[y_min:y_max, x_min:x_max]
-
-        # 图像后处理：按比例压缩到原来的 80%
-        scaled_roi = cv2.resize(cropped_roi, (0, 0), fx=0.8, fy=0.8, interpolation=cv2.INTER_AREA)
-
-        # 画质降低 50%：使用 OpenCV 重新编码为 JPEG，设置质量系数为 50
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-        success, compressed_jpg = cv2.imencode('.jpg', scaled_roi, encode_param)
-        
-        if not success:
-            return
-
-        # 转换为 base64 字符串
-        base64_image = base64.b64encode(compressed_jpg.tobytes()).decode("utf-8")
-
-        # ==========================================
-        # 阶段四：启动独立线程调用大模型
-        # ==========================================
-        # 开启推理锁，并把网络请求扔到后台线程执行，主线程继续高速运转
+        base64_image = base64.b64encode(image_msg.data).decode("utf-8")
         self.is_calling_vlm = True
-        threading.Thread(target=self.call_vlm, args=(base64_image,), daemon=True).start()
+        threading.Thread(
+            target=self.call_vlm,
+            args=(base64_image, image_path),
+            daemon=True,
+        ).start()
 
-    def call_vlm(self, base64_image):
-        """后台线程中执行的大模型请求"""
+    def save_picture(self, image_bytes):
+        if self.save_tuwen_picture:
+            name = f"tuwen_{int(time.time())}_{self.picture_count}.jpg"
+        else:
+            name = "latest_tuwen.jpg"
+        self.picture_count += 1
+        image_path = os.path.join(self.tuwen_picture_dir, name)
+        with open(image_path, "wb") as f:
+            f.write(image_bytes)
+        self.get_logger().info(f"saved tuwen picture: {image_path}")
+        return image_path
+
+    def publish_text(self, text):
+        msg = String()
+        msg.data = text
+        self.text_pub.publish(msg)
+        self.screen_pub.publish(msg)
+        self.legacy_text_pub.publish(msg)
+
+    def call_vlm(self, base64_image, image_path):
         try:
-            # 报告请求开始
-            response_msg = String()
-            response_msg.data = "start"
-            self.publisher_.publish(response_msg)
-            self.get_logger().info("已发送图片至大模型，等待回复...")
+            self.publish_text("start")
+            if not self.client.api_key:
+                raise RuntimeError("VOLCANO_API_KEY or ARK_API_KEY is not set")
 
             completion = self.client.chat.completions.create(
-                model="doubao-vision-lite-32k",
+                model=self.volc_model,
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "描述图片上的人"},
+                            {"type": "text", "text": self.tuwen_prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {
                                     "url": f"data:image/jpeg;base64,{base64_image}",
-                                }
+                                },
                             },
                         ],
                     }
                 ],
-                max_tokens=300,
+                max_tokens=120,
             )
-            
-            # 解析并发布结果
             result_text = completion.choices[0].message.content
-            response_msg.data = result_text
-            self.publisher_.publish(response_msg)
-            self.get_logger().info(f"大模型回复: {result_text}")
-
+            self.publish_text(result_text)
+            self.get_logger().info(f"VLM result: {result_text}")
         except Exception as e:
-            self.get_logger().error(f"大模型调用异常: {str(e)}")
-            response_msg = String()
-            response_msg.data = "error"
-            self.publisher_.publish(response_msg)
-            
+            self.get_logger().error(f"VLM call failed: {e}")
+            self.publish_text("error")
         finally:
-            # 无论成功失败，释放推理锁，允许系统抓取下一张图
+            if not self.save_tuwen_picture:
+                try:
+                    os.remove(image_path)
+                except OSError:
+                    pass
             self.is_calling_vlm = False
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PersonLLMNode()
+    node = TuwenVisionLanguageNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
@@ -214,5 +187,6 @@ def main(args=None):
         if rclpy.ok():
             rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
